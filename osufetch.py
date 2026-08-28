@@ -1,95 +1,71 @@
-__version__ = "1.4.0"
+__version__ = "2.0.0"
 
 import os
+import re
 import sys
+import shutil
 import argparse
+import tempfile
+import subprocess
 import httpx
 from configparser import ConfigParser
 from ossapi import Ossapi
 from datetime import datetime
 from colorama import Fore, Style, init
 
-# === Initialize colorama for cross-platform coloring ===
 init(autoreset=True)
 
-# === Config defaults and paths ===
 CONFIG_DIR = os.path.expanduser("~/.config/osufetch")
 CONFIG_FILE = os.path.join(CONFIG_DIR, "config.ini")
 
-ascii_arts = {
-    "mania": """
-         :!JPB#&@@@&#G5?~.         
-      ^JB@@&BP5JJ?JY5G#@@&P?:      
-    !G@@BJ~:     .    .:75&@&5^    
-  ^G@@P~       !&&B.      .?#@@Y.  
- !&@&!         Y@@@^        .Y@@G. 
-^&@&^    ~55!  J@@@^ .?5J:    J@@P 
-G@@7     G@@#  J@@@^ ~@@@?     G@@7
-@@&:     G@@#  J@@@^ ~@@@?     ?@@P
-@@&:     G@@#  J@@@^ ~@@@?     ?@@P
-G@@7     G@@#  J@@@^ ~@@@?     G@@7
-^&@&^    ~55!  J@@@^ .?PY:    J@@P 
- !&@&!         Y@@@^        .Y@@G. 
-  ^G@@P~       !&&B:      .?#@@Y.  
-    7B@@BJ~.     .     :75&@@5^    
-      ~YB@@&BP5J??JY5G#@@&G?:      
-         :!JPB&&@@@&#B5?~.         
-""",
-    "osu": """
-         :!JPB#&@@@&#G5?~.         
-      ^JB@@&BP5J??JY5G#@@&P?:      
-    !G@@BJ~.   ....    :75&@&5^    
-  ^G@@P~  .!YG#&&&&#BPJ^  .?#@@Y.  
- !&@&!  :Y&@@@@@@@@@@@@@B?  .Y@@G. 
-^&@&^  7&@@@@@@@@@@@@@@@@@G:  J@@P 
-G@@7  !@@@@@@@@@@@@@@@@@@@@B.  G@@7
-@@&:  P@@@@@@@@@@@@@@@@@@@@@!  ?@@P
-@@&:  P@@@@@@@@@@@@@@@@@@@@@!  ?@@P
-G@@7  !@@@@@@@@@@@@@@@@@@@@B.  G@@7
-^&@&^  7&@@@@@@@@@@@@@@@@@B:  J@@P 
- !&@&!  :Y&@@@@@@@@@@@@@B?  .Y@@G. 
-  ^G@@P~  .!YG#&&&&#BPJ^  .?#@@Y.  
-    7B@@BJ~.   ....    :!5&@@5^    
-      ~YB@@&BPYJ??JY5G#@@&G?:      
-         :!JPB&&@@@&#B5?~.         
-""",
-    "taiko": """
-         :!JPB#&@@@&#G5?~.         
-      ^JB@@&BP5J??JY5G#@@&P?:      
-    !G@@BJ~.   ....    :75&@&5^    
-  ^G@@P~  .!YG#&&&&&#PJ^  .?#@@Y.  
- !&@&!  :Y&@@BYY@@#J5#@@B?  .Y@@G. 
-^&@&^  7&@&J:  ^@@B   ~P@@G:  J@@P 
-G@@7  !@@#^    ~@@B     7@@B.  G@@7
-@@&:  P@@7     ~@@B      P@@!  ?@@P
-@@&:  P@@7     ~@@B      P@@!  ?@@P
-G@@7  !@@#^    ~@@B     7@@B.  G@@7
-^&@&^  7&@&J:  ^@@B   ^5@@B:  J@@P 
- !&@&!  :Y&@@GYY@@#J5#@@B?  .Y@@G. 
-  ^G@@P~  .!YG#&&&&&#PJ^  .?#@@Y.  
-    7B@@BJ~.   ....    :!5&@@5^    
-      ~YB@@&BPYJ??JY5G#@@&G?:      
-         :!JPB&&@@@&#B5?~.         
-""",
-    "fruits": """
-         :!JPB#&@@@&#B5?~:         
-      ^JB@@&#G5YJJJY5G#@@&G?:      
-    !G@@#Y!:           :!5&@@P~    
-  :P@@G!                  .7B@@5.  
- ~&@&7      .JGBP!          .Y@@B: 
-:#@&~       ?@@@@&.           ?@@G.
-5@@J        .75PY~  ^~~.       P@@?
-&@@:               P@@@&!      7@@G
-&@@:              .P@@@&!      7@@G
-5@@J        .75PY~  ^!~.       P@@?
-:#@&~       ?@@@@&.           ?@@G.
- ~&@&7      .YGBP!          .J@@B: 
-  :P@@G!                  .7B@@5.  
-    !G@@#Y~:           :!5&@@P~    
-      ^JB@@&BP5JJ?JY5G#@@&G?:      
-         :!JPB#&@@@&#B5J~:         
-"""
-}
+DEFAULT_AVATAR_WIDTH = 24
+DEFAULT_AVATAR_HEIGHT = 16
+
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
+
+
+def render_avatar_with_chafa(image_path, width=DEFAULT_AVATAR_WIDTH,
+                              height=DEFAULT_AVATAR_HEIGHT, fmt="symbols"):
+    """
+    Render an image file to colored terminal output using chafa (libchafa's
+    CLI frontend). Returns a list of lines (each possibly containing ANSI
+    color codes), or None if chafa isn't available / rendering failed.
+    """
+    chafa_bin = shutil.which("chafa")
+    if not chafa_bin:
+        return None
+
+    cmd = [
+        chafa_bin,
+        f"--size={width}x{height}",
+        "--stretch",
+        f"--format={fmt}",
+        "--colors=full",
+        image_path,
+    ]
+
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+    if result.returncode != 0 or not result.stdout:
+        return None
+
+    lines = result.stdout.split("\n")
+    while lines and lines[-1].strip() == "":
+        lines.pop()
+    return lines
+
+
+def visible_len(s):
+    """Length of a string as displayed, ignoring ANSI escape codes."""
+    return len(_ANSI_RE.sub("", s))
 
 def load_or_create_config():
     if not os.path.exists(CONFIG_DIR):
@@ -98,7 +74,6 @@ def load_or_create_config():
     config = ConfigParser()
     if os.path.exists(CONFIG_FILE):
         config.read(CONFIG_FILE)
-        # Проверим, что все нужные поля есть
         if ("DEFAULT" not in config or
             not config["DEFAULT"].get("client_id") or
             not config["DEFAULT"].get("client_secret") or
@@ -136,10 +111,51 @@ def fetch_user_data(api, user_id):
         print(f"Error fetching user data: {e}")
         sys.exit(1)
 
+
+def download_avatar(avatar_url):
+    """Download the user's avatar to a temp file and return its path, or
+    None on failure."""
+    if not avatar_url:
+        return None
+    try:
+        with httpx.Client(http2=True, timeout=10, follow_redirects=True) as client:
+            response = client.get(avatar_url)
+            response.raise_for_status()
+    except Exception as e:
+        print(f"Warning: Failed to download avatar: {e}")
+        return None
+
+    content_type = response.headers.get("content-type", "")
+    suffix = ".png"
+    if "jpeg" in content_type or "jpg" in content_type:
+        suffix = ".jpg"
+    elif "gif" in content_type:
+        suffix = ".gif"
+    elif "webp" in content_type:
+        suffix = ".webp"
+
+    try:
+        fd, path = tempfile.mkstemp(prefix="osufetch_avatar_", suffix=suffix)
+        with os.fdopen(fd, "wb") as f:
+            f.write(response.content)
+        return path
+    except OSError as e:
+        print(f"Warning: Failed to save avatar to disk: {e}")
+        return None
+
 def main():
     parser = argparse.ArgumentParser(description="osufetch — terminal osu! profile")
     parser.add_argument("id", nargs="?", help="Specify osu! user ID/Name for this run only (does NOT overwrite config)")
     parser.add_argument("-v", "--version", action="version", version=f"{__version__}")
+    parser.add_argument("--avatar-width", type=int, default=DEFAULT_AVATAR_WIDTH,
+                         help=f"Avatar width in terminal cells (default: {DEFAULT_AVATAR_WIDTH})")
+    parser.add_argument("--avatar-height", type=int, default=DEFAULT_AVATAR_HEIGHT,
+                         help=f"Avatar height in terminal cells (default: {DEFAULT_AVATAR_HEIGHT})")
+    parser.add_argument("--chafa-format", default="symbols",
+                         choices=["symbols", "sixels", "kitty", "iterm2"],
+                         help="chafa output format (default: symbols, works in any terminal)")
+    parser.add_argument("--no-avatar", action="store_true",
+                         help="Skip avatar rendering entirely (text info only)")
     args = parser.parse_args()
 
     config = load_or_create_config()
@@ -175,7 +191,6 @@ def main():
                 response = client.get(url)
                 response.raise_for_status()
                 data = response.json()
-                # data — это словарь region_id -> region_name
                 return data
         except Exception as e:
             print(f"Warning: Failed to fetch regions mapping: {e}")
@@ -200,9 +215,30 @@ def main():
 
     grades = user.statistics.grade_counts
 
-    ascii_art = ascii_arts.get(playmode, "(no ascii art)")
+    avatar_path = None
+    art_lines = ["(avatar disabled)"]
 
-    ascii_lines = ascii_art.strip("\n").split("\n")
+    if not args.no_avatar:
+        avatar_url = getattr(user, "avatar_url", None)
+        avatar_path = download_avatar(avatar_url)
+
+        if avatar_path:
+            rendered = render_avatar_with_chafa(
+                avatar_path,
+                width=args.avatar_width,
+                height=args.avatar_height,
+                fmt=args.chafa_format,
+            )
+            if rendered:
+                art_lines = rendered
+            else:
+                art_lines = [
+                    f"{Fore.RED}[chafa not found or render failed —{Style.RESET_ALL}",
+                    f"{Fore.RED} install libchafa's `chafa` CLI]{Style.RESET_ALL}",
+                ]
+        else:
+            art_lines = [f"{Fore.RED}[no avatar available]{Style.RESET_ALL}"]
+
     info_lines = [
         f"{Fore.CYAN}Username:{Style.RESET_ALL}       {Fore.WHITE}{user.username}{Style.RESET_ALL}",
         f"{Fore.CYAN}Also known as:{Style.RESET_ALL}  {Fore.WHITE}{", ".join(user.previous_usernames) if user.previous_usernames else "-"}{Style.RESET_ALL}",
@@ -222,21 +258,26 @@ def main():
         f"{Fore.CYAN}Joined:{Style.RESET_ALL}         {Fore.WHITE}{user.join_date.date()}{Style.RESET_ALL}",
     ]
 
-    # Workaround for 4K/7K mania mode
     if playmode == "mania":
         info_lines[6] = f"{Fore.CYAN}PP:{Style.RESET_ALL}             {Fore.WHITE}{round(user.statistics.pp)} (4K: {round(user.statistics.variants[0].pp)}, 7K: {round(user.statistics.variants[1].pp)}){Style.RESET_ALL}"
         info_lines[8] = f"{Fore.CYAN}Global Rank:{Style.RESET_ALL}    {Fore.WHITE}#{user.statistics.global_rank} (4K: #{user.statistics.variants[0].global_rank}, 7K: #{user.statistics.variants[1].global_rank}){Style.RESET_ALL}"
         info_lines[9] = f"{Fore.CYAN}Country Rank:{Style.RESET_ALL}   {Fore.WHITE}#{user.statistics.country_rank} (4K: #{user.statistics.variants[0].country_rank}, 7K: #{user.statistics.variants[1].country_rank}){Style.RESET_ALL}"
 
-    # Print ASCII art + info side by side
-    max_lines = max(len(ascii_lines), len(info_lines))
+    art_width = max((visible_len(line) for line in art_lines), default=0)
+    max_lines = max(len(art_lines), len(info_lines))
     for i in range(max_lines):
-        art_line = ascii_lines[i] if i < len(ascii_lines) else " " * 40
+        art_line = art_lines[i] if i < len(art_lines) else ""
         info_line = info_lines[i] if i < len(info_lines) else ""
-        print(f"{Fore.YELLOW}{art_line:<40}{Style.RESET_ALL}  {info_line}")
+        padding = " " * max(0, art_width - visible_len(art_line))
+        print(f"{art_line}{padding}  {info_line}")
 
     print()
 
+    if avatar_path and os.path.exists(avatar_path):
+        try:
+            os.remove(avatar_path)
+        except OSError:
+            pass
+
 if __name__ == "__main__":
     main()
-
